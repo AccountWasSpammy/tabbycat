@@ -75,7 +75,7 @@ jobs:
     - name: Run migrations
       run: python ./tabbycat/manage.py migrate
     - name: Run tests
-      run: python tabbycat/manage.py test -v 2 --exclude-tag=selenium
+      run: python -Wd tabbycat/manage.py test -v 2 --exclude-tag=selenium
 
   build-docker-dev:
 
