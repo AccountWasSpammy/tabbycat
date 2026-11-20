@@ -2,6 +2,12 @@
 
 <img width=200 src="https://raw.githubusercontent.com/TabbycatDebate/tabbycat/develop/tabbycat/static/logo.svg?sanitize=true">
 
+> this fork exists because develop_heroku.py has issues :(((
+> it becomes obsolete when the main repo is updated
+> which is probably soon, heroku-22 is EOL
+> idk
+> thankyous tabbycat maintainers/devs <3
+
 # Tabbycat
 
 [![Release](https://img.shields.io/github/release/tabbycatdebate/tabbycat.svg)](https://github.com/tabbycatdebate/tabbycat/releases)
