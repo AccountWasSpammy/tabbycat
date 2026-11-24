@@ -1,257 +1,246 @@
 #!/usr/bin/python
-"""Deploys Tabbycat to Heroku.
-This script is compatible with both Python 2.7 and Python 3.4 (and later)."""
+# this script now needs python 3.6+ to run thanks to secrets (read: if you just installed python, all is fine)
 
+# all the stuff we need
 import argparse
 import json
-import platform
+import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 
-try:
-    from django.core.management.utils import get_random_secret_key
-except ImportError:
-    from random import SystemRandom
+CYAN = "\033[1;36m"
+YELLOW = "\033[1;33m"
+# checks for windows
+IS_WINDOWS = os.name == "nt"
+USE_COLOR = not IS_WINDOWS
+SUBPROCESS_KWARGS = dict(shell=True) if IS_WINDOWS else dict()
+IMPORT_COMMAND = "importtournament"
+PS_SCALE = "ps:scale"
 
-    def get_random_secret_key():
-        chars = 'abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*(-_=+)'
-        return ''.join(SystemRandom().choice(chars) for _ in range(50))
-
-# Arguments
-parser = argparse.ArgumentParser(description="Deploy Tabbycat to a new Heroku app.")
-
-parser.add_argument(
-    "urlname", type=str,
-    help="Name of the Heroku app. The app will be at urlname.herokuapp.com. Use '-' to use a Heroku-generated default.")
-
-parser.add_argument(
-    "--no-open", action="store_false", default=True, dest="open",
-    help="Don't open the Heroku website in your browser at the end")
-
-parser.add_argument(
-    "--git-remote", type=str, default=None,
-    help="Name of Git remote to use. Use '-' to use the urlname. If omitted, reverts to default Heroku behaviour.")
-
-parser.add_argument(
-    "--git-branch", type=str, default=None,
-    help="Git branch to push (defaults to current branch)")
-
-parser.add_argument(
-    "--pg-plan", "--postgresql-plan", type=str, default="essential-0",
-    help="Heroku Postgres plan (default essential-0)")
-
-parser.add_argument(
-    "--web-dynos", type=str, default="1",
-    help="Web dyno specification, passed to heroku ps:scale web=[], e.g. 1:eco, 1:basic, 2:Standard-1X")
-
-parser.add_argument(
-    "--import-tournament", type=str, metavar="IMPORT_DIR",
-    help="Also run the importtournament command, importing from IMPORT_DIR")
-
-parser.add_argument(
-    "--dry-run", action="store_true", default=False,
-    help="Print commands, don't run them.")
-
-config_group = parser.add_argument_group("heroku configuration settings")
-config_group.add_argument("--fast-cache-timeout", type=int, default=None, metavar="TIMEOUT",
-                          help="Set the faster public page cache timeout to TIMEOUT")
-config_group.add_argument("--slow-cache-timeout", type=int, default=None, metavar="TIMEOUT",
-                          help="Set the slower public page cache timeout to TIMEOUT")
-config_group.add_argument("--tab-cache-timeout", type=int, default=None, metavar="TIMEOUT",
-                          help="Set the tab page cache timeout to TIMEOUT")
-config_group.add_argument("--enable-debug", action="store_true", default=False,
-                          help="Enable Django debug pages")
-config_group.add_argument("--time-zone", type=str, default="Australia/Melbourne",
-                          help="Time zone name from the IANA tz database")
-
-# Import tournament arguments are copied from importtournament.py, and should be
-# updated when these options in importtournament.py change.
-import_tournament_group = parser.add_argument_group(
-    "import tournament options",
-    "Passed to the importtournament command. Ignored unless " +
-    "--import-tournament is used. Provided for convenience; to use other " +
-    "importtournament options, run the importtournament command separately instead.")
-import_tournament_group.add_argument(
-    '-s', '--slug', type=str, action='store', default=None, dest="tournament_slug",
-    help='Override tournament slug. (Default: use name of directory.)')
-import_tournament_group.add_argument(
-    '--name', type=str, action='store', default=None, dest="tournament_name",
-    help='Override tournament name. (Default: use name of directory.)')
-import_tournament_group.add_argument(
-    '--short-name', type=str, action='store', default=None, dest="tournament_short_name",
-    help='Override tournament short name. (Default: use name of directory.)')
-
-args = parser.parse_args()
-
-if platform.system() == "Windows":
-    subprocess_kwargs = dict(shell=True)
-    use_color = False
-else:
-    subprocess_kwargs = dict()
-    use_color = True
-
-# Helper functions
-
-
-def print_command(command):
-    message = "$ " + " ".join(command)
-    if use_color:
-        message = "\033[1;36m" + message + "\033[0m"
+def echo(message, color=None):
+    if color and USE_COLOR:
+        message = color + message + "\033[0m"
     print(message)
 
+def redact(command):
+    return ["DJANGO_SECRET_KEY=***" if arg.startswith("DJANGO_SECRET_KEY=") else arg for arg in command]
 
-def run_command(command):
-    print_command(command)
-    if not args.dry_run:
-        subprocess.check_call(command, **subprocess_kwargs)
+class Runner:
+    def __init__(self, dry_run):
+        self.dry_run = dry_run
+    def heroku(self, *args, app_name, capture=False, tolerate_failure=False, auth=False):
+        command = ["heroku"] + list(args) + ["--app", app_name]
+        return self.run(command, capture=capture, tolerate_failure=tolerate_failure, auth=auth)
+    def run(self, command, capture=False, tolerate_failure=False, auth=False):
+        echo("$ " + " ".join(redact(command)), CYAN)
+        if self.dry_run:
+            return ""
+        try:
+            if capture:
+                output = subprocess.check_output(command, **SUBPROCESS_KWARGS)
+                text = output.decode()
+                sys.stdout.write(text)
+                sys.stdout.flush()
+                return text
+            subprocess.check_call(command, **SUBPROCESS_KWARGS)
+            return ""
+        except subprocess.CalledProcessError as exc:
+            if tolerate_failure:
+                return None
+            if auth:
+                echo("Command %s failed, exit code %d. Authenticate via 'heroku login' first." % (" ".join(command), exc.returncode), YELLOW)
+                sys.exit(exc.returncode or 1)
+            echo("Command failed, exit code %d: %s" % (exc.returncode, " ".join(redact(command))), YELLOW)
+            echo("The Heroku app might be partially configured; please check the dashboard before retrying.", YELLOW)
+            sys.exit(exc.returncode or 1)
 
+# arguments. these worked, so don't change what isn't broken
+def build_parser():
+    parser = argparse.ArgumentParser(description="Deploy Tabbycat to a new Heroku app.")
 
-def make_heroku_command(command):
-    return ["heroku"] + command + ["--app", urlname]
+    parser.add_argument(
+        "urlname", type=str,
+        help="Name of the Heroku app. The app will be at urlname.herokuapp.com. Use '-' to use a Heroku-generated default.")
 
+    parser.add_argument(
+        "--no-open", action="store_false", default=True, dest="open",
+        help="Don't open the Heroku website in your browser at the end")
 
-def run_heroku_command(command):
-    command = make_heroku_command(command)
-    run_command(command)
+    parser.add_argument(
+        "--git-remote", type=str, default=None,
+        help="Name of Git remote to use. Use '-' to use the urlname. If omitted, reverts to default Heroku behaviour.")
 
+    parser.add_argument(
+        "--git-branch", type=str, default=None,
+        help="Git branch to push (defaults to current branch)")
 
-def get_output_from_command(command):
-    print_command(command)
-    output = subprocess.check_output(command, **subprocess_kwargs)
-    output = output.decode()
-    sys.stdout.write(output)
-    sys.stdout.flush()
-    return output
+    parser.add_argument(
+        "--pg-plan", "--postgresql-plan", type=str, default="essential-0",
+        help="Heroku Postgres plan (default essential-0)")
 
+    parser.add_argument(
+        "--web-dynos", type=str, default="1",
+        help="Web dyno specification, passed to heroku %s web=[], e.g. 1:eco, 1:basic, 2:Standard-1X" % PS_SCALE)
 
-def print_yellow(message):
-    if use_color:
-        message = "\033[1;33m" + message + "\033[0m"
-    print(message)
+    parser.add_argument(
+        "--import-tournament", type=str, metavar="IMPORT_DIR",
+        help="Also run the %s command, importing from IMPORT_DIR" % IMPORT_COMMAND)
 
+    parser.add_argument(
+        "--dry-run", action="store_true", default=False,
+        help="Print commands, don't run them.")
 
-def get_git_push_spec():
+    config_group = parser.add_argument_group("heroku configuration settings")
+    config_group.add_argument("--fast-cache-timeout", type=int, default=None, metavar="TIMEOUT",
+                              help="Set the faster public page cache timeout to TIMEOUT")
+    config_group.add_argument("--slow-cache-timeout", type=int, default=None, metavar="TIMEOUT",
+                              help="Set the slower public page cache timeout to TIMEOUT")
+    config_group.add_argument("--tab-cache-timeout", type=int, default=None, metavar="TIMEOUT",
+                              help="Set the tab page cache timeout to TIMEOUT")
+    config_group.add_argument("--enable-debug", action="store_true", default=False,
+                              help="Enable Django debug pages")
+    config_group.add_argument("--time-zone", type=str, default="Australia/Melbourne",
+                              help="Time zone name from the IANA tz database")
+
+    import_tournament_group = parser.add_argument_group(
+        "import tournament options",
+        "Passed to the %s command. Ignored unless " % IMPORT_COMMAND +
+        "--import-tournament is used. Provided for convenience; to use other " +
+        "%s options, run the %s command separately instead." % (IMPORT_COMMAND, IMPORT_COMMAND))
+    import_tournament_group.add_argument(
+        '-s', '--slug', type=str, action='store', default=None, dest="tournament_slug",
+        help='Override tournament slug. (Default: use name of directory.)')
+    import_tournament_group.add_argument(
+        '--name', type=str, action='store', default=None, dest="tournament_name",
+        help='Override tournament name. (Default: use name of directory.)')
+    import_tournament_group.add_argument(
+        '--short-name', type=str, action='store', default=None, dest="tournament_short_name",
+        help='Override tournament short name. (Default: use name of directory.)')
+
+    return parser
+
+# get the app
+def parse_app(output, fallback_name):
+    clean = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output)
+    try:
+        app = json.loads(clean)
+    except (ValueError, TypeError):
+        app = None
+    if isinstance(app, dict):
+        name = app.get("name") or fallback_name
+        web_url = app.get("web_url")
+        if name:
+            if web_url and not web_url.endswith("/"):
+                web_url += "/"
+            return name, web_url
+    match = re.search(r"https://git\.heroku\.com/([\w_-]+)\.git", clean)
+    if match:
+        return match.group(1), None
+    return fallback_name, None
+
+# push .git, and if we can't find the git commit/branch to push make the user specify (hopefully never)
+def get_git(runner, args):
     if args.git_branch:
         return "master" if args.git_branch == "master" else args.git_branch + ":master"
-    try:
-        branch = get_output_from_command(["git", "symbolic-ref", "--short", "--quiet", "HEAD"]).strip()
-    except subprocess.CalledProcessError:
-        print_yellow("Attempt to find git branch name failed, trying for commit instead...")
-    else:
+    branch = runner.run(["git", "symbolic-ref", "--short", "--quiet", "HEAD"], capture=True, tolerate_failure=True)
+    if runner.dry_run:
+        return "<branch>:master"
+    if branch is not None:
+        branch = branch.strip()
         return "master" if branch == "master" else branch + ":master"
-    try:
-        return get_output_from_command(["git", "rev-parse", "--short", "--quiet", "HEAD"]).strip() + ":refs/heads/master"
-    except subprocess.CalledProcessError:
-        print_yellow("Could not determine current git commit or branch. Use --git-branch to specify a git branch to push.")
-    exit(1)
+    echo("Couldn't find a branch name. Fishing for commits instead...", YELLOW)
+    commit = runner.run(["git", "rev-parse", "--short", "--quiet", "HEAD"], capture=True, tolerate_failure=True)
+    if commit is not None:
+        return commit.strip() + ":refs/heads/master"
+    echo("Couldn't get the current git commit or branch. Use --git-branch to specify a git branch to push.", YELLOW)
+    sys.exit(1)
 
-
-# Check that Heroku is installed (shutil.which requires Python 3.3+, otherwise
-# skip the check, it'll crash on the next command without a friendly message)
-if sys.version_info >= (3, 3) and shutil.which("heroku") is None:
-    print_yellow("Error: heroku not found.")
-    print("You'll need to install the Heroku CLI before you can use this script.")
-    print("Go to https://devcenter.heroku.com/articles/heroku-cli, or search the")
-    print("internet for \"Heroku CLI\".")
-    exit(1)
-
-# Create the app with addons
-addons = ["papertrail", "heroku-postgresql:%s" % args.pg_plan, "rediscloud:30", "heroku-redis:mini"]
-command = ["heroku", "apps:create", "--json", "--stack", "heroku-26"]
-
-if addons:
-    command.extend(["--addons", ",".join(addons)])
-if args.urlname != "-":
-    command.append(args.urlname)
-output = get_output_from_command(command)
-
-if args.urlname != "-":
-    urlname = args.urlname
-else:
-    # yoink the structured app obj, the human-readable summary can change between versions (so its not futureproof to parse it)
-    clean_output = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", output)
-    try:
-        app = json.loads(clean_output)
-        urlname = app["name"]
-    except (ValueError, KeyError, TypeError):
-        # git remote has the app name verbatim, so fallback is to check that instead
-        match = re.search(r"https://git\.heroku\.com/([\w_-]+)\.git", clean_output)
-        if not match:
-            print_yellow("couldn't find the heroku app name")
-            print("heroku sez:")
+def deploy(args):
+    if args.dry_run:
+        echo("dry_run doesn't actually find the app name or branch. those are resolved during actual runtime.")
+    runner = Runner(args.dry_run)
+    secret_key = secrets.token_urlsafe(50)
+    runner.run(["heroku", "auth:whoami"], auth=True)
+    # required...
+    addons = ["papertrail", "heroku-postgresql:%s" % args.pg_plan, "rediscloud:30", "heroku-redis:mini"]
+    # heroku-26 is heroku's current default stack
+    # when it goes EOL, change the last digit and you're done
+    create = ["heroku", "apps:create", "--json", "--stack", "heroku-26", "--addons", ",".join(addons)]
+    if args.urlname != "-":
+        create.append(args.urlname)
+    output = runner.run(create, capture=True)
+    if args.dry_run:
+        app_name = args.urlname if args.urlname != "-" else "<app-name>"
+        web_url = None
+    else:
+        app_name, web_url = parse_app(output, args.urlname if args.urlname != "-" else None)
+        if not app_name:
+            echo("Couldn't get the Heroku app name.", YELLOW)
+            print("Heroku has this to say:")
             print(repr(output))
-            sys.exit(1)
-        urlname = match.group(1)
+            return 1
 
-heroku_url = "https://git.heroku.com/%s.git" % urlname
+    # we give the django secret to the config and keep it hidden from echo'd outputs
+    config = ["config:set", "DISABLE_COLLECTSTATIC=1", "ON_HEROKU=1", "USING_NGINX=1",
+              "DJANGO_SECRET_KEY=%s" % secret_key, "DEBUG=1" if args.enable_debug else "DEBUG=0"]
+    if args.fast_cache_timeout is not None:
+        config.append("PUBLIC_FAST_CACHE_TIMEOUT=%d" % args.fast_cache_timeout)
+    if args.slow_cache_timeout is not None:
+        config.append("PUBLIC_SLOW_CACHE_TIMEOUT=%d" % args.slow_cache_timeout)
+    if args.tab_cache_timeout is not None:
+        config.append("TAB_PAGES_CACHE_TIMEOUT=%d" % args.tab_cache_timeout)
+    config.append("TIME_ZONE=%s" % args.time_zone)
+    runner.heroku(*config, app_name=app_name)
 
-# Set config variables
-command = ["config:set", "DISABLE_COLLECTSTATIC=1", "ON_HEROKU=1", "USING_NGINX=1"]
-secret_key = get_random_secret_key()
+    runner.heroku("buildpacks:set", "https://github.com/heroku/heroku-buildpack-nginx.git", app_name=app_name)
+    runner.heroku("buildpacks:add", "heroku/nodejs", app_name=app_name)
+    runner.heroku("buildpacks:add", "heroku/python", app_name=app_name)
 
-if platform.system() == "Windows": # Windows shell needs escaping
-    command.append("DJANGO_SECRET_KEY=\"%s\"" % secret_key)
-else:
-    command.append("DJANGO_SECRET_KEY=%s" % secret_key)
+    if args.git_remote:
+        remote_name = args.git_remote if args.git_remote != "-" else app_name
+        runner.heroku("git:remote", "--remote", remote_name, app_name=app_name)
+    else:
+        remote_name = "https://git.heroku.com/%s.git" % app_name
 
-command.append("DEBUG=1" if args.enable_debug else "DEBUG=0")
+    echo("Waiting for Postgres and Redis to provision...", YELLOW)
+    runner.heroku("pg:wait", app_name=app_name)
+    runner.heroku("redis:wait", app_name=app_name)
+    print("Done. Moving on...")
+    push_spec = get_git(runner, args)
+    runner.run(["git", "push", remote_name, push_spec])
+    runner.heroku(PS_SCALE, "worker=1", "web=%s" % args.web_dynos, app_name=app_name)
 
-if args.fast_cache_timeout:
-    command.append("PUBLIC_FAST_CACHE_TIMEOUT=%d" % args.fast_cache_timeout)
-if args.slow_cache_timeout:
-    command.append("PUBLIC_SLOW_CACHE_TIMEOUT=%d" % args.slow_cache_timeout)
-if args.tab_cache_timeout:
-    command.append("TAB_PAGES_CACHE_TIMEOUT=%d" % args.tab_cache_timeout)
-if args.time_zone:
-    command.append("TIME_ZONE=%s" % args.time_zone)
+    if args.import_tournament:
+        command = ["run", "python", "tabbycat/manage.py", IMPORT_COMMAND, args.import_tournament]
+        if args.tournament_slug:
+            command += ["--slug", args.tournament_slug]
+        if args.tournament_name:
+            command += ["--name", args.tournament_name]
+        if args.tournament_short_name:
+            command += ["--short-name", args.tournament_short_name]
+        runner.heroku(*command, app_name=app_name)
 
-run_heroku_command(command)
+    if args.open:
+        if runner.heroku("open", app_name=app_name, tolerate_failure=True) is None:
+            echo("Tiny problem: couldn't open the URL.", YELLOW)
+            echo("Here's the URL so you can visit it yourself.", YELLOW)
+            # if we can't parse the JSON and there ends up being a random suffix this will fall through and require one to manually check the dashboard
+            echo(web_url if web_url else "https://%s.herokuapp.com/" % app_name, YELLOW)
 
-# Set build packs
-run_heroku_command(["buildpacks:set", "https://github.com/heroku/heroku-buildpack-nginx.git"])
-run_heroku_command(["buildpacks:add", "heroku/nodejs"])
-run_heroku_command(["buildpacks:add", "heroku/python"])
+    return 0
 
-# Set up a remote, if applicable
-if args.git_remote:
-    remote_name = args.git_remote if args.git_remote != "-" else urlname
-    run_heroku_command(["git:remote", "--remote", remote_name])
-else:
-    remote_name = heroku_url
+# friendly reminder to install heroku CLI pretty please with a cherry on top
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if shutil.which("heroku") is None:
+        echo("Couldn't find the Heroku CLI, which is needed to deploy Tabbycat through this script.", YELLOW)
+        print("Head https://devcenter.heroku.com/articles/heroku-cli, or search the")
+        print("internet for \"Heroku CLI\".")
+        return 1
+    return deploy(args)
 
-# wait for postgres & redis to provision then continue, this is just a print msg
-print_yellow("waiting for postgres and redis now")
-# launch via "run_heroku_command" instead of just "heroku", so it resolves to "heroku.cmd" which is heroku CLI on windows
-# otherwise i THINK it's just an alias for "heroku" on other OSes
-run_heroku_command(["pg:wait"])
-run_heroku_command(["redis:wait"])
-print("ok continuing")
-
-# Push source code to Heroku
-push_spec = get_git_push_spec()
-run_command(["git", "push", remote_name, push_spec])
-
-# Scale dynos (by default it only adds 1 web dyno)
-run_heroku_command(["ps:scale", "worker=1", "web=%s" % args.web_dynos])
-
-# Import tournament, if provided
-if args.import_tournament:
-    command = ["run", "python", "tabbycat/manage.py", "importtournament", args.import_tournament]
-    if args.tournament_slug:
-        command += ["--slug", args.tournament_slug]
-    if args.tournament_name:
-        command += ["--name", args.tournament_name]
-    if args.tournament_short_name:
-        command += ["--short-name", args.tournament_short_name]
-    run_heroku_command(command)
-
-# Open in browser
-if args.open:
-    try:
-        run_heroku_command(["open"])
-    except subprocess.CalledProcessError:
-        print_yellow("There was a problem automatically opening your browser, but your new Tabbycat")
-        print_yellow("site itself did deploy successfully. Just visit this URL in your browser:")
-        print_yellow("http://%s.herokuapp.com/" % urlname)
+if __name__ == "__main__":
+    sys.exit(main())
