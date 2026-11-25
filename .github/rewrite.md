@@ -1,4 +1,4 @@
-this is meant to explain what the rewrite of the deploy_heroku.py script did
+this is meant to explain what the rewrite of the deploy_heroku.py script did <br>
 if these benefits do not manifest something is wrong (i hope not)
 
 ## impt
