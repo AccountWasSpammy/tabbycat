@@ -3,7 +3,7 @@
 <img width=200 src="https://raw.githubusercontent.com/TabbycatDebate/tabbycat/develop/tabbycat/static/logo.svg?sanitize=true">
 
 > this fork exists because develop_heroku.py has issues :(((<br>
-> i tried to redo the heroku deployment script, it can be read [here](https://github.com/AccountWasSpammy/tabbycat/blob/develop/.github/rewrite.md)<br>
+> i tried to redo the heroku deployment script, tl;dr of what it does can be read [here](https://github.com/AccountWasSpammy/tabbycat/blob/develop/.github/rewrite.md)<br>
 > thankyous tabbycat maintainers/devs <3<br>
 
 # Tabbycat
